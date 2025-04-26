@@ -1,0 +1,329 @@
+Okay, pojďme na to. Vytvoříme plán pro implementaci funkce nahrávání, konverze, editace a správy souborů pro formáty TXT, DOCX, PDF, JPG/JPEG, PNG, XLSX, CSV a JSON v rámci vaší aplikace Agent Asistent.
+
+Plán bude zahrnovat návrh, kroky implementace, refaktorizaci stávající struktury a optimalizaci.
+
+Cíle Funkcionality:
+
+Nahrávání: Umožnit přihlášeným uživatelům nahrát soubory uvedených formátů přes webové rozhraní.
+
+Konverze & Zpracování: Automaticky konvertovat obsah souboru na "zpracovatelný" formát (primárně text nebo strukturovaná data jako JSON). Využít AI pro:
+
+Strukturování extrahovaného textu (z DOCX, PDF, TXT, ODT, HTML).
+
+Popis obsahu obrázků (JPG, PNG).
+
+Zpracování tabulkových dat (XLSX, CSV) do strukturované podoby (např. seznam JSON objektů).
+
+Validaci/zpracování JSON souborů.
+
+Editace: Zobrazit výsledek konverze uživateli v editovatelném formátu v UI. Umožnit mu provést úpravy.
+
+Ukládání: Uložit finální (upravený) obsah do databáze, spárovaný s konkrétním uživatelem.
+
+Správa: Umožnit uživateli zobrazit seznam jeho uložených záznamů, znovu je editovat a mazat.
+
+Navrhovaná Architektura a Refaktorizace:
+
+Sjednocení Konvertoru:
+
+Problém: Máte convertor/converter.py a correspondence_platform/backend/file_converter.py. To je duplicitní a matoucí.
+
+Řešení: Zrušte correspondence_platform/backend/file_converter.py. Upravte convertor/converter.py tak, aby byl snadno importovatelný a použitelný jako knihovna přímo z Flask aplikace (correspondence_platform/backend/app.py). Může to znamenat přepsání converter.py na třídu nebo sadu funkcí místo čistě skriptu pro příkazovou řádku. Adresář convertor/ by se mohl stát Python modulem (přidáním __init__.py).
+
+Výhoda: Jedno místo pro logiku konverze, snadnější údržba a testování.
+
+Asynchronní Zpracování (Optimalizace):
+
+Problém: Konverze, zejména s AI voláními nebo u velkých souborů, může trvat dlouho a blokovat webový požadavek.
+
+Řešení: Použijte systém front úkolů (např. Celery s Redis/RabbitMQ nebo jednodušší Flask-Executor/RQ).
+
+Při nahrání souboru: Backend uloží soubor, vytvoří záznam v DB se stavem "zpracovává se" a zařadí úlohu konverze do fronty. Okamžitě vrátí uživateli odpověď (např. "Soubor se zpracovává").
+
+Worker (samostatný proces) vezme úlohu z fronty, zavolá konverzní funkci.
+
+Po dokončení worker aktualizuje stav záznamu v DB na "zpracováno" (nebo "chyba") a uloží výsledek.
+
+Frontend může periodicky kontrolovat stav (polling) nebo použít WebSocket pro notifikaci o dokončení.
+
+Výhoda: Responzivní UI, lepší škálovatelnost.
+
+Databázové Schéma:
+
+Navrhnout tabulku (např. user_documents) pro ukládání zpracovaných dat.
+
+Sloupce:
+
+id: Primární klíč (INTEGER, AUTOINCREMENT)
+
+user_id: Cizí klíč na tabulku uživatelů (INTEGER, NOT NULL)
+
+original_filename: Původní název nahraného souboru (TEXT)
+
+input_format: Typ původního souboru (TEXT - např. 'pdf', 'xlsx')
+
+processed_content: Samotný zpracovaný a uživatelem upravený obsah (TEXT - bude ukládat JSON string nebo prostý text)
+
+content_type: Indikátor, zda processed_content je 'json' nebo 'text' (TEXT)
+
+status: Stav zpracování ('pending', 'processing', 'completed', 'error') (TEXT)
+
+error_message: Chybová zpráva v případě neúspěchu (TEXT, NULLABLE)
+
+created_at: Čas vytvoření záznamu (TIMESTAMP, DEFAULT CURRENT_TIMESTAMP)
+
+updated_at: Čas poslední aktualizace (TIMESTAMP, DEFAULT CURRENT_TIMESTAMP)
+
+Indexy: Vytvořit index nad user_id pro rychlé vyhledávání dokumentů uživatele.
+
+Plán Implementace (Kroky):
+
+Fáze 1: Příprava a Refaktorizace Konvertoru
+
+Nastavení Prostředí: Ujistěte se, že máte funkční vývojové prostředí pro correspondence_platform (Flask) i convertor.
+
+Refaktorizace Konvertoru:
+
+Přesuňte logiku z convertor/converter.py do třídy nebo sady funkcí.
+
+Odstraňte závislost na argumentech příkazové řádky pro základní použití jako knihovna.
+
+Přidejte __init__.py do convertor/, aby se stal importovatelným modulem.
+
+Odstraňte correspondence_platform/backend/file_converter.py.
+
+Upravte correspondence_platform/backend/app.py (nebo kdekoliv je to potřeba), aby importoval a používal funkce/třídy z refaktorizovaného convertor modulu.
+
+Přidání Podpory XLSX:
+
+Přidejte do konvertoru logiku pro čtení .xlsx souborů. Knihovna openpyxl nebo pandas jsou dobré volby.
+
+Rozhodněte, jak reprezentovat data (seznam řádků? seznam JSON objektů, kde klíče jsou názvy sloupců?). Zpracování pomocí AI může pomoci se strukturou.
+
+Přidejte závislost do requirements.txt (pro Flask) a případně do dokumentace konvertoru.
+
+Zpracování JSON Vstupu:
+
+Rozhodněte, co dělat s .json soubory na vstupu. Možnosti:
+
+Jen validovat JSON a předat ho dál.
+
+Použít AI k sumarizaci nebo extrakci klíčových informací (pokud je to žádoucí).
+
+Předat ho 1:1 jako výstup pro editaci. (Nejjednodušší)
+
+Implementujte zvolenou logiku.
+
+Testování Konvertoru: Aktualizujte/vytvořte jednotkové testy pro všechny podporované formáty (včetně XLSX a JSON vstupu) v convertor/tests/.
+
+Fáze 2: Backend (Flask)
+
+Databázové Migrace:
+
+Definujte schéma pro tabulku user_documents (např. pomocí SQLAlchemy modelů, pokud používáte ORM, nebo v db_schema.sql).
+
+Vytvořte mechanismus pro aplikaci schématu/migrací (např. pomocí Flask-Migrate nebo manuálním spuštěním SQL).
+
+Implementace Nahrávání:
+
+Vytvořte Flask endpoint (např. /api/upload) pro příjem POST požadavků s multipart/form-data.
+
+Endpoint musí:
+
+Ověřit, že uživatel je přihlášen (@login_required nebo ekvivalent).
+
+Bezpečně přijmout a uložit nahraný soubor do dočasného úložiště.
+
+Validovat typ souboru (dle přípony a/nebo MIME typu) proti podporovaným formátům.
+
+Bez Asynchronního Zpracování (Jednodušší varianta):
+
+Zavolat konverzní funkci z refaktorizovaného convertor modulu.
+
+Počkat na výsledek.
+
+Vrátit výsledek (nebo chybu) v JSON odpovědi frontendu.
+
+S Asynchronním Zpracováním (Doporučená varianta):
+
+Vytvořit záznam v user_documents se stavem pending a user_id.
+
+Zařadit úlohu konverze do fronty (Celery/RQ) s ID záznamu a cestou k dočasnému souboru.
+
+Vrátit odpověď s ID záznamu (nebo ID úkolu) frontendu, aby mohl sledovat stav.
+
+Implementace Konverzního Workeru (Pouze pro asynchronní variantu):
+
+Vytvořte funkci/úlohu pro workera (např. v tasks.py).
+
+Tato úloha:
+
+Přijme ID záznamu a cestu k souboru.
+
+Aktualizuje stav záznamu v DB na processing.
+
+Zavolá konverzní logiku.
+
+V případě úspěchu: Uloží processed_content, content_type a aktualizuje stav na completed.
+
+V případě chyby: Uloží error_message a aktualizuje stav na error.
+
+Smaže dočasný soubor.
+
+Endpoint pro Získání Výsledku/Stavu (Pouze pro asynchronní variantu):
+
+Vytvořte endpoint (např. /api/documents/<int:doc_id>/status) pro frontend, aby mohl zkontrolovat stav zpracování a získat výsledek, jakmile je completed.
+
+Endpoint pro Uložení/Aktualizaci:
+
+Vytvořte endpoint (např. /api/documents/<int:doc_id>) pro příjem PUT/PATCH požadavků.
+
+Musí:
+
+Ověřit přihlášení a že dokument doc_id patří danému uživateli.
+
+Přijmout upravená data (processed_content) z těla požadavku (JSON).
+
+Validovat data.
+
+Aktualizovat záznam v databázi (sloupec processed_content a updated_at).
+
+Vrátit úspěšnou odpověď.
+
+Endpoint pro Seznam Dokumentů:
+
+Vytvořte endpoint (např. /api/documents) pro GET požadavky.
+
+Musí:
+
+Ověřit přihlášení.
+
+Načíst z DB všechny záznamy pro daného user_id (např. id, original_filename, created_at, updated_at, status).
+
+Vrátit seznam jako JSON.
+
+Endpoint pro Načtení Detailu Dokumentu (pro Editaci):
+
+Vytvořte endpoint (např. /api/documents/<int:doc_id>) pro GET požadavky.
+
+Musí:
+
+Ověřit přihlášení a vlastnictví dokumentu.
+
+Načíst kompletní záznam z DB.
+
+Vrátit data jako JSON.
+
+Endpoint pro Smazání Dokumentu:
+
+Vytvořte endpoint (např. /api/documents/<int:doc_id>) pro DELETE požadavky.
+
+Musí:
+
+Ověřit přihlášení a vlastnictví dokumentu.
+
+Smazat záznam z DB.
+
+Vrátit úspěšnou odpověď (např. 204 No Content).
+
+Fáze 3: Frontend (HTML, CSS, JavaScript)
+
+Komponenta Nahrávání:
+
+Vytvořte formulář s <input type="file"> umožňující výběr souborů. Omezte přijímané typy pomocí atributu accept.
+
+Přidejte JavaScript pro:
+
+Odeslání souboru na /api/upload pomocí Fetch API nebo XMLHttpRequest.
+
+Zobrazení indikátoru nahrávání.
+
+Zpracování odpovědi:
+
+Synchronní: Přímo zobrazit výsledek v editoru.
+
+Asynchronní: Zobrazit zprávu "Zpracovává se" a začít periodicky kontrolovat stav na /api/documents/<int:doc_id>/status, dokud není completed nebo error. Po dokončení načíst a zobrazit výsledek.
+
+Editor Výstupu:
+
+Implementujte oblast pro zobrazení a editaci processed_content.
+
+Pokud je content_type 'text', může stačit <textarea>.
+
+Pokud je content_type 'json', zvažte použití editoru s podporou JSON syntaxe (např. Monaco Editor, CodeMirror) nebo dynamicky generovaný formulář, pokud má JSON předvídatelnou strukturu. Pro obecný textový obsah (i ten strukturovaný AI) může být vhodný WYSIWYG editor (TinyMCE, Quill).
+
+Přidejte tlačítko "Uložit".
+
+Logika Ukládání:
+
+JavaScript pro tlačítko "Uložit":
+
+Získá aktuální obsah z editoru.
+
+Odešle PUT/PATCH požadavek na /api/documents/<int:doc_id> s obsahem v těle.
+
+Zobrazí potvrzení o uložení nebo chybovou hlášku.
+
+Seznam Dokumentů:
+
+Vytvořte stránku/sekci pro zobrazení seznamu uživatelských dokumentů.
+
+JavaScript pro:
+
+Načtení seznamu z /api/documents při načtení stránky.
+
+Dynamické vykreslení tabulky nebo seznamu s položkami (název, datum atd.).
+
+Přidání tlačítek/odkazů "Editovat" a "Smazat" ke každé položce.
+
+Logika Editace a Mazání:
+
+Tlačítko "Editovat": Přesměruje na stránku/zobrazení editoru a načte data pomocí GET požadavku na /api/documents/<int:doc_id>.
+
+Tlačítko "Smazat":
+
+Zobrazí potvrzovací dialog.
+
+Při potvrzení odešle DELETE požadavek na /api/documents/<int:doc_id>.
+
+Po úspěšném smazání odstraní položku ze zobrazeného seznamu (bez nutnosti znovu načítat celou stránku).
+
+Zpracování Chyb a UX:
+
+Implementujte srozumitelné chybové hlášky pro uživatele (problémy s nahráváním, konverzí, ukládáním).
+
+Používejte indikátory načítání/zpracování pro zlepšení uživatelského zážitku.
+
+Fáze 4: Testování a Nasazení
+
+Backend Testy: Napište jednotkové a integrační testy pro Flask endpointy (ověření logiky, autorizace, zpracování chyb).
+
+Frontend Testy: Zvažte end-to-end testy (např. pomocí Selenium, Cypress, Playwright) pro ověření celého uživatelského scénáře.
+
+Manuální Testování: Důkladně otestujte celý proces s různými typy souborů, velikostmi a okrajovými případy.
+
+Optimalizace:
+
+Analyzujte výkon konverzí a databázových dotazů. Přidejte indexy dle potřeby.
+
+Optimalizujte frontend (velikost JS/CSS, rychlost načítání).
+
+Zabezpečení: Znovu zkontrolujte validaci vstupů, autorizaci, ochranu proti CSRF atd.
+
+Dokumentace: Aktualizujte README.md a případnou další dokumentaci o nové funkcionalitě a změnách v architektuře.
+
+Nasazení: Nasaďte aktualizovanou aplikaci do produkčního prostředí. Monitorujte logy a výkon.
+
+Klíčové Technologie (dle README a návrhu):
+
+Backend: Python, Flask, SQLAlchemy (volitelně), Celery/RQ (volitelně)
+
+Frontend: HTML, CSS, JavaScript (možná s frameworkem jako React/Vue/Alpine.js pro snazší správu stavu UI)
+
+Databáze: SQLite (dle README) nebo zvažte PostgreSQL pro lepší práci s JSON (JSONB typ) a škálovatelnost.
+
+Konverze: Knihovny zmíněné v convertor README (PyPDF2, python-docx, Pillow, openpyxl, lxml, odfpy, beautifulsoup4), google-generativeai.
+
+Fronta úloh (volitelně): Redis/RabbitMQ.
+
+Tento plán poskytuje strukturovaný přístup k vybudování požadované funkcionality, včetně refaktorizace a optimalizace. Jednotlivé kroky lze dále rozdělit na menší úkoly. Hodně štěstí s implementací!

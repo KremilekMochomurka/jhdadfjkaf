@@ -1,0 +1,195 @@
+{% extends "layout.html" %}
+{% block title %}Upload & View Documents{% endblock %}
+
+{% block content %}
+<section id="upload-section">
+    <h2>Nahrát nový dokument</h2>
+    <form id="upload-form" enctype="multipart/form-data">
+        <div class="file-upload-container">
+            <div class="file-upload-area" id="drop-area">
+                <input type="file" id="file-input" name="files[]" accept=".txt,.pdf,.docx,.doc,.odt,.html,.htm,.xlsx,.xls,.csv,.json,.png,.jpg,.jpeg,.webp,.gif,.bmp" multiple required>
+                <label for="file-input" class="file-upload-prompt">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <p style="font-size: 1.2rem; font-weight: 500; margin-top: 1rem;">Přetáhněte soubory sem nebo klikněte pro výběr</p>
+                    <p class="small-text">(Můžete vybrat více souborů najednou)</p>
+                    <div id="selected-files-container"></div>
+                </label>
+            </div>
+            <button type="submit">Nahrát a Zpracovat</button>
+        </div>
+
+        <!-- Progress container for multiple file uploads -->
+        <div id="upload-progress-container" style="display: none;">
+            <h3>Průběh zpracování</h3>
+            <div id="overall-progress-container">
+                <div class="progress-label">Celkový průběh: <span id="overall-progress-text">0%</span></div>
+                <div class="progress-bar-container">
+                    <div id="overall-progress-bar" class="progress-bar"></div>
+                </div>
+            </div>
+            <div id="files-progress-list"></div>
+        </div>
+    </form>
+    <div id="upload-status"></div>
+    <div class="supported-formats">
+        <p><small>Podporované formáty:</small></p>
+        <p><small>
+            <strong>Textové dokumenty:</strong> .txt, .pdf, .docx, .doc, .odt, .html, .htm<br>
+            <strong>Strukturovaná data:</strong> .xlsx, .xls, .csv, .json<br>
+            <strong>Obrázky:</strong> .png, .jpg, .jpeg, .webp, .gif, .bmp
+        </small></p>
+    </div>
+</section>
+
+<section id="documents-section" style="margin-top: 20px;">
+    <h2>Zpracované dokumenty</h2>
+    <div class="document-controls">
+        <div class="document-actions">
+            <button id="refresh-docs-btn">Obnovit seznam</button>
+            <button id="select-all-btn">Vybrat vše</button>
+            <button id="deselect-all-btn">Zrušit výběr</button>
+        </div>
+        <div class="document-filters">
+            <label for="sort-select">Seřadit podle:</label>
+            <select id="sort-select">
+                <option value="newest">Nejnovější</option>
+                <option value="oldest">Nejstarší</option>
+                <option value="name-asc">Název (A-Z)</option>
+                <option value="name-desc">Název (Z-A)</option>
+            </select>
+            <label for="filter-select">Filtrovat:</label>
+            <select id="filter-select">
+                <option value="all">Všechny dokumenty</option>
+                <option value="completed">Dokončené</option>
+                <option value="processing">Zpracovávané</option>
+                <option value="error">S chybou</option>
+                <option value="email">Emailová korespondence</option>
+                <option value="know_how">Know-how</option>
+            </select>
+        </div>
+    </div>
+    <div id="document-count"></div>
+
+    <!-- Bulk actions panel -->
+    <div id="bulk-actions-panel" style="display: none;">
+        <div class="bulk-actions-info">
+            <span id="selected-count">0 dokumentů vybráno</span>
+        </div>
+        <div class="bulk-actions-buttons">
+            <button id="bulk-delete-btn" class="danger-btn">Smazat vybrané</button>
+        </div>
+    </div>
+
+    <div class="folder-document-container">
+        <!-- Folder structure -->
+        <div class="folder-structure">
+            <h3>Složky</h3>
+            <div class="folder-actions">
+                <button id="add-folder-btn" class="small-btn"><i class="fas fa-folder-plus"></i> Nová složka</button>
+            </div>
+            <div id="folder-tree" class="folder-tree">
+                <!-- Folder tree will be loaded here via JavaScript -->
+                <div class="loading-indicator">Načítání složek...</div>
+            </div>
+        </div>
+
+        <!-- Document list -->
+        <div class="document-list-container">
+            <h3>Dokumenty</h3>
+            <ul id="document-list" class="selectable-list draggable-list">
+                <!-- Document list items will be loaded here via JavaScript -->
+                <li>Načítání dokumentů...</li>
+            </ul>
+        </div>
+    </div>
+</section>
+
+<!-- Folder view section -->
+<section id="folder-section" style="display: none; margin-top: 20px;">
+    <div class="folder-header">
+        <h2>Složka: <span id="folder-name"></span></h2>
+        <div class="folder-controls">
+            <button id="folder-back-btn"><i class="fas fa-arrow-left"></i> Zpět</button>
+            <button id="folder-edit-btn"><i class="fas fa-edit"></i> Upravit složku</button>
+        </div>
+    </div>
+    <div id="folder-description"></div>
+
+    <div class="folder-content">
+        <div class="folder-subfolders">
+            <h3>Podsložky</h3>
+            <div id="subfolder-list" class="folder-grid">
+                <!-- Subfolders will be loaded here via JavaScript -->
+            </div>
+        </div>
+
+        <div class="folder-documents">
+            <h3>Dokumenty</h3>
+            <ul id="folder-document-list" class="selectable-list draggable-list">
+                <!-- Documents in this folder will be loaded here via JavaScript -->
+            </ul>
+        </div>
+    </div>
+</section>
+
+<section id="editor-section" style="display: none; margin-top: 20px;">
+    <h2>Obsah dokumentu: <span id="editor-doc-title"></span></h2>
+    <div class="editor-controls">
+        <button id="edit-toggle-btn">Upravit obsah</button>
+        <button id="save-content-btn" style="display: none;">Uložit změny</button>
+    </div>
+    <div id="document-content" contenteditable="false">
+        <!-- Processed content will be displayed/edited here -->
+    </div>
+    <div id="editor-status"></div>
+</section>
+<!-- Modal for folder creation/editing -->
+<div id="folder-modal" class="modal-overlay">
+    <div class="modal-container">
+        <div class="modal-header">
+            <h3 class="modal-title" id="folder-modal-title">Nová složka</h3>
+            <button class="modal-close" id="folder-modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="folder-form">
+                <div class="form-group">
+                    <label for="folder-name-input">Název složky</label>
+                    <input type="text" id="folder-name-input" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="folder-description-input">Popis (volitelný)</label>
+                    <textarea id="folder-description-input" name="description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="folder-type-select">Typ složky</label>
+                    <select id="folder-type-select" name="folder_type">
+                        <option value="general">Obecná</option>
+                        <option value="email">Emailová korespondence</option>
+                        <option value="know_how">Know-how</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="folder-parent-select">Nadřazená složka (volitelné)</label>
+                    <select id="folder-parent-select" name="parent_id">
+                        <option value="">Žádná (kořenová složka)</option>
+                        <!-- Options will be loaded dynamically -->
+                    </select>
+                </div>
+                <input type="hidden" id="folder-id-input" name="id">
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button id="folder-modal-cancel" class="secondary-btn">Zrušit</button>
+            <button id="folder-modal-save" class="primary-btn">Uložit</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts_extra %}
+<!-- Add specific JS for this page if needed, or handle in main.js -->
+{% endblock %}

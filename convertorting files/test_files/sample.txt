@@ -1,0 +1,1 @@
+Toto je jednoduchý textový soubor pro testování.

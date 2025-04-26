@@ -1,0 +1,15 @@
+Flask>=2.0
+Flask-SQLAlchemy>=2.5
+python-dotenv>=0.19 # To manage environment variables like API keys
+google-generativeai>=0.4 # For Gemini API
+Pillow>=9.0 # For image processing
+python-docx>=1.1.0 # For DOCX parsing
+PyPDF2>=3.0.0 # For PDF parsing
+openpyxl>=3.1.0 # For Excel (.xlsx) parsing
+pandas>=2.0.0 # For advanced data processing (Excel, CSV)
+odfpy>=1.4.1 # For ODT (OpenDocument Text) parsing
+beautifulsoup4>=4.11.0 # For HTML parsing
+lxml>=4.9.0 # For HTML parsing (used by BeautifulSoup)
+pytesseract>=0.3.10 # For OCR (Optical Character Recognition)
+pdf2image>=1.16.3 # For converting PDF to images for OCR
+# Add Celery/Redis later if implementing async

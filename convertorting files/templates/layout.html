@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Agent Asistent{% endblock %}</title>
+    <!-- Link to CSS - Adjust path if needed -->
+    <link rel="stylesheet" href="{{ url_for('send_static', path='css/style.css') }}">
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <header>
+        <div class="header-container">
+            <div class="logo-container">
+                <h1>Agent Asistent</h1>
+            </div>
+            <nav class="main-nav">
+                <ul class="nav-list">
+                    <li class="nav-item"><a href="/" class="nav-link active"><i class="fas fa-home"></i> Domů</a></li>
+                    <li class="nav-item"><a href="/documents" class="nav-link"><i class="fas fa-file-alt"></i> Dokumenty</a></li>
+                    <li class="nav-item"><a href="/folders" class="nav-link"><i class="fas fa-folder"></i> Složky</a></li>
+                    <li class="nav-item"><a href="/settings" class="nav-link"><i class="fas fa-cog"></i> Nastavení</a></li>
+                </ul>
+            </nav>
+            <button class="mobile-menu-toggle" aria-label="Toggle menu">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+    </header>
+
+    <main>
+        {% block content %}
+        <!-- Page specific content will be injected here -->
+        {% endblock %}
+    </main>
+
+    <footer>
+        <p>&copy; {{ now.year }} Agent Asistent</p>
+    </footer>
+
+    <!-- Link to JavaScript - Adjust path if needed -->
+    <script src="{{ url_for('send_static', path='js/main.js') }}"></script>
+    <script src="{{ url_for('send_static', path='js/drag-and-drop.js') }}"></script>
+    <script src="{{ url_for('send_static', path='js/navigation.js') }}"></script>
+
+    <!-- Notification container for system messages -->
+    <div id="notification-container"></div>
+
+    {% block scripts_extra %}{% endblock %}
+</body>
+</html>
