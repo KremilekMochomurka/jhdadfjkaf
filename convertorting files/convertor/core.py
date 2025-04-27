@@ -60,12 +60,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # --- Gemini API Configuration ---
 # Ensure GEMINI_API_KEY environment variable is set
 try:
+    # Load environment variables again to ensure we have the latest values
+    from dotenv import load_dotenv
+    load_dotenv()
+
     gemini_api_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_api_key:
         logging.warning("GEMINI_API_KEY environment variable not set. AI processing will fail.")
         # raise ValueError("GEMINI_API_KEY environment variable not set.")
     else:
         genai.configure(api_key=gemini_api_key)
+        logging.info("Gemini API configured successfully")
 except Exception as e:
     logging.error(f"Error configuring Gemini API: {e}")
     gemini_api_key = None # Ensure it's None if config fails

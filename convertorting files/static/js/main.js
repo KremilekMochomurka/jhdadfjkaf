@@ -4,6 +4,7 @@ let uploadForm, fileInput, uploadStatus, documentList;
 
 // Make fetchDocumentList globally accessible
 window.fetchDocumentList = async function() {
+    console.log('Global fetchDocumentList called');
     if (typeof fetchDocumentList === 'function') {
         return fetchDocumentList();
     }
@@ -31,13 +32,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log(`Selected ${fileInput.files.length} files`);
 
                 // Zobrazit názvy vybraných souborů
-                let fileNames = '';
-                for (let i = 0; i < fileInput.files.length; i++) {
-                    fileNames += fileInput.files[i].name + '<br>';
+                const selectedFilesContainer = document.getElementById('selected-files-container');
+                if (selectedFilesContainer) {
+                    selectedFilesContainer.innerHTML = '';
+
+                    let fileList = document.createElement('ul');
+                    fileList.className = 'selected-files-list';
+
+                    for (let i = 0; i < fileInput.files.length; i++) {
+                        let fileItem = document.createElement('li');
+                        fileItem.className = 'selected-file-item';
+
+                        // Ikona podle typu souboru
+                        let fileIcon = document.createElement('i');
+                        const fileExt = fileInput.files[i].name.split('.').pop().toLowerCase();
+
+                        if (['pdf'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-pdf';
+                        } else if (['doc', 'docx', 'odt'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-word';
+                        } else if (['xls', 'xlsx', 'csv'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-excel';
+                        } else if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-image';
+                        } else if (['html', 'htm'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-code';
+                        } else if (['json'].includes(fileExt)) {
+                            fileIcon.className = 'fas fa-file-code';
+                        } else {
+                            fileIcon.className = 'fas fa-file-alt';
+                        }
+
+                        // Název souboru
+                        let fileName = document.createElement('span');
+                        fileName.textContent = fileInput.files[i].name;
+
+                        fileItem.appendChild(fileIcon);
+                        fileItem.appendChild(fileName);
+                        fileList.appendChild(fileItem);
+                    }
+
+                    selectedFilesContainer.appendChild(fileList);
                 }
 
                 if (uploadStatus) {
-                    uploadStatus.innerHTML = `Vybrané soubory:<br>${fileNames}`;
+                    uploadStatus.innerHTML = `Vybrané soubory: ${fileInput.files.length}`;
                     uploadStatus.style.display = 'block';
                 }
             }
@@ -97,7 +136,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 // Aktualizovat seznam dokumentů
-                fetchDocumentList();
+                await fetchDocumentList();
+
+                // Resetovat formulář a vyčistit vybrané soubory
+                const selectedFilesContainer = document.getElementById('selected-files-container');
+                if (selectedFilesContainer) {
+                    selectedFilesContainer.innerHTML = '';
+                }
             } catch (error) {
                 console.error('Upload error:', error);
                 if (uploadStatus) {
@@ -122,10 +167,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const documents = await response.json();
-            console.log('Documents fetched:', documents);
+            const result = await response.json();
+            console.log('Documents fetched:', result);
+
+            // Get the documents array from the response
+            const documents = result.documents || [];
 
             // Zobrazit seznam dokumentů
+            const documentList = document.getElementById('document-list');
             if (documentList) {
                 documentList.innerHTML = '';
 
@@ -212,18 +261,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         viewBtn.innerHTML = '<i class="fas fa-eye"></i> Zobrazit';
                         viewBtn.addEventListener('click', () => viewDocument(doc.id));
 
-                        const editBtn = document.createElement('button');
-                        editBtn.className = 'btn-sm';
-                        editBtn.innerHTML = '<i class="fas fa-edit"></i> Upravit';
-                        editBtn.addEventListener('click', () => editDocument(doc.id));
-
                         const deleteBtn = document.createElement('button');
                         deleteBtn.className = 'btn-sm delete-btn';
                         deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Smazat';
                         deleteBtn.addEventListener('click', () => deleteDocument(doc.id));
 
                         docActions.appendChild(viewBtn);
-                        docActions.appendChild(editBtn);
                         docActions.appendChild(deleteBtn);
 
                         li.appendChild(docInfo);
@@ -302,15 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return iconMap[contentType.toLowerCase()] || 'fas fa-file';
     }
 
-    // Function to edit a document
-    function editDocument(docId) {
-        console.log(`Editing document ${docId}`);
-        // Implement document editing logic here
-        // For example, open a modal or redirect to an edit page
-        if (window.dragAndDrop && typeof window.dragAndDrop.showNotification === 'function') {
-            window.dragAndDrop.showNotification('Funkce úpravy dokumentu bude brzy k dispozici', 'info');
-        }
-    }
+    // Funkce pro úpravu dokumentu byla odstraněna, protože ji již nepoužíváme
 
     // Function to view a document
     async function viewDocument(docId) {
@@ -323,33 +358,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const document = await response.json();
-            console.log('Document details:', document);
+            const docData = await response.json();
+            console.log('Document details:', docData);
 
             // Get editor section elements
             const editorSection = document.getElementById('editor-section');
             const editorDocTitle = document.getElementById('editor-doc-title');
             const documentContent = document.getElementById('document-content');
             const editorStatus = document.getElementById('editor-status');
-            const editToggleBtn = document.getElementById('edit-toggle-btn');
-            const saveContentBtn = document.getElementById('save-content-btn');
 
             if (!editorSection || !editorDocTitle || !documentContent) {
                 throw new Error('Editor elements not found');
             }
 
             // Set document title
-            editorDocTitle.textContent = document.original_filename;
+            editorDocTitle.textContent = docData.original_filename;
 
             // Set document content
-            if (document.content) {
+            if (docData.processed_content) {
                 // Check if content is JSON and format it
                 try {
-                    const contentObj = JSON.parse(document.content);
-                    documentContent.innerHTML = formatContent(contentObj, document.content_type);
+                    const contentObj = JSON.parse(docData.processed_content);
+                    documentContent.innerHTML = formatContent(contentObj, docData.content_type);
                 } catch (e) {
                     // Not JSON, display as is
-                    documentContent.innerHTML = document.content;
+                    documentContent.innerHTML = docData.processed_content;
                 }
             } else {
                 documentContent.innerHTML = '<p>Žádný obsah k zobrazení</p>';
@@ -361,31 +394,27 @@ document.addEventListener('DOMContentLoaded', () => {
             // Scroll to editor section
             editorSection.scrollIntoView({ behavior: 'smooth' });
 
-            // Set up edit toggle button
-            if (editToggleBtn) {
-                editToggleBtn.onclick = function() {
-                    const isEditable = documentContent.contentEditable === 'true';
-                    documentContent.contentEditable = !isEditable;
+            // Set up back to list button
+            const backToListBtn = document.getElementById('back-to-list-btn');
+            if (backToListBtn) {
+                backToListBtn.onclick = function() {
+                    // Hide editor section
+                    editorSection.style.display = 'none';
 
-                    if (!isEditable) {
-                        // Switching to edit mode
-                        editToggleBtn.textContent = 'Zrušit úpravy';
-                        saveContentBtn.style.display = 'inline-block';
-                        documentContent.classList.add('editing');
-                        documentContent.focus();
+                    // Show appropriate section based on context
+                    if (window.currentFolderId) {
+                        // We're in a folder view
+                        const folderSection = document.getElementById('folder-section');
+                        if (folderSection) {
+                            folderSection.style.display = 'block';
+                        }
                     } else {
-                        // Switching back to view mode
-                        editToggleBtn.textContent = 'Upravit obsah';
-                        saveContentBtn.style.display = 'none';
-                        documentContent.classList.remove('editing');
+                        // We're in the main document list
+                        const documentsSection = document.getElementById('documents-section');
+                        if (documentsSection) {
+                            documentsSection.style.display = 'block';
+                        }
                     }
-                };
-            }
-
-            // Set up save button
-            if (saveContentBtn) {
-                saveContentBtn.onclick = function() {
-                    saveDocumentContent(docId, documentContent.innerHTML);
                 };
             }
 
@@ -500,56 +529,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return html;
     }
 
-    // Function to save document content
-    async function saveDocumentContent(docId, content) {
-        console.log(`Saving content for document ${docId}`);
-
-        try {
-            const response = await fetch(`/api/documents/${docId}/content`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    content: content
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const result = await response.json();
-            console.log('Save response:', result);
-
-            // Show success notification
-            if (window.dragAndDrop && typeof window.dragAndDrop.showNotification === 'function') {
-                window.dragAndDrop.showNotification('Obsah dokumentu byl úspěšně uložen', 'success');
-            } else {
-                alert('Obsah dokumentu byl úspěšně uložen');
-            }
-
-            // Reset editor to view mode
-            const documentContent = document.getElementById('document-content');
-            const editToggleBtn = document.getElementById('edit-toggle-btn');
-            const saveContentBtn = document.getElementById('save-content-btn');
-
-            if (documentContent && editToggleBtn && saveContentBtn) {
-                documentContent.contentEditable = 'false';
-                documentContent.classList.remove('editing');
-                editToggleBtn.textContent = 'Upravit obsah';
-                saveContentBtn.style.display = 'none';
-            }
-
-        } catch (error) {
-            console.error('Error saving document content:', error);
-            if (window.dragAndDrop && typeof window.dragAndDrop.showNotification === 'function') {
-                window.dragAndDrop.showNotification(`Chyba při ukládání obsahu: ${error.message}`, 'error');
-            } else {
-                alert(`Chyba při ukládání obsahu: ${error.message}`);
-            }
-        }
-    }
+    // Funkce pro ukládání obsahu dokumentu byla odstraněna, protože ji již nepoužíváme
 
     // Function to delete a document
     async function deleteDocument(docId) {
@@ -616,8 +596,42 @@ document.addEventListener('DOMContentLoaded', () => {
     // Načíst strukturu složek
     fetchFolderStructure();
 
-    // Set up auto-refresh for documents and folders
-    setupAutoRefresh();
+    // Set up auto-refresh for documents and folders (only if not already set up)
+    if (!window.refreshIntervals) {
+        setupAutoRefresh();
+    }
+
+    // Přidání event listenerů pro tlačítka v navigaci
+    const documentsTab = document.getElementById('documents-tab');
+    const foldersTab = document.getElementById('folders-tab');
+    const settingsTab = document.getElementById('settings-tab');
+
+    if (documentsTab) {
+        documentsTab.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (window.showDocumentsView) {
+                window.showDocumentsView();
+            }
+        });
+    }
+
+    if (foldersTab) {
+        foldersTab.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (window.showFoldersView) {
+                window.showFoldersView();
+            }
+        });
+    }
+
+    if (settingsTab) {
+        settingsTab.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (window.showSettingsView) {
+                window.showSettingsView();
+            }
+        });
+    }
 
     // Funkce pro načtení struktury složek
     async function fetchFolderStructure() {
@@ -630,6 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('Fetching folder structure');
 
         try {
+            // Remove trailing slash to avoid 404 errors
             const response = await fetch('/api/folders');
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
@@ -880,12 +895,13 @@ document.addEventListener('DOMContentLoaded', () => {
             docActions.className = 'doc-actions';
 
             const viewBtn = document.createElement('button');
-            viewBtn.textContent = 'Zobrazit';
+            viewBtn.className = 'btn-sm';
+            viewBtn.innerHTML = '<i class="fas fa-eye"></i> Zobrazit';
             viewBtn.addEventListener('click', () => viewDocument(doc.id));
 
             const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'delete-btn';
-            deleteBtn.textContent = 'Smazat';
+            deleteBtn.className = 'btn-sm delete-btn';
+            deleteBtn.innerHTML = '<i class="fas fa-trash-alt"></i> Smazat';
             deleteBtn.addEventListener('click', () => deleteDocument(doc.id));
 
             docActions.appendChild(viewBtn);
@@ -1286,6 +1302,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to set up auto-refresh for documents and folders
     function setupAutoRefresh() {
+        console.log('Setting up auto-refresh');
+
+        // Clear any existing intervals
+        if (window.refreshIntervals) {
+            console.log('Clearing existing refresh intervals');
+            clearInterval(window.refreshIntervals.documents);
+            clearInterval(window.refreshIntervals.folders);
+        }
+
         // Store the current state to detect changes
         let lastDocumentCount = 0;
         let lastDocumentStatuses = {};
@@ -1299,7 +1324,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
 
-                const documents = await response.json();
+                const result = await response.json();
+                const documents = result.documents || [];
 
                 // Check if document count has changed
                 if (documents.length !== lastDocumentCount) {
@@ -1441,4 +1467,7 @@ document.addEventListener('DOMContentLoaded', () => {
             folders: folderCheckInterval
         };
     }
+
+    // Export fetchDocumentList function to global scope
+    window.fetchDocumentList = fetchDocumentList;
 });

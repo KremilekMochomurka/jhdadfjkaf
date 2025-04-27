@@ -2,27 +2,38 @@ import os
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from dotenv import load_dotenv
-import datetime
+from datetime import datetime, timezone
 import uuid
 import logging
-import threading
 import concurrent.futures
 from werkzeug.utils import secure_filename
 from convertor.core import process_file # Import the processing function
-from convertor.file_splitter import split_file, should_split_file # Import file splitting functions
+from convertor.file_splitter import split_file, should_split_file, cleanup_temp_files # Import file splitting functions
 
 # Load environment variables (e.g., for API keys)
 load_dotenv()
 
 # --- Configuration ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'instance', 'uploads')
-DATABASE_PATH = os.path.join(BASE_DIR, 'instance', 'app.db')
+UPLOAD_FOLDER = os.path.join(BASE_DIR, os.environ.get('UPLOAD_FOLDER', 'instance/uploads'))
 
+# Handle database path
+db_url = os.environ.get('DATABASE_URL', 'sqlite:///instance/documents.db')
+if db_url.startswith('sqlite:///'):
+    # For SQLite, convert the URL to a file path
+    DATABASE_PATH = os.path.join(BASE_DIR, db_url.replace('sqlite:///', ''))
+else:
+    # For other databases, keep the URL as is
+    DATABASE_PATH = db_url
+
+# Create necessary directories
 if not os.path.exists(os.path.join(BASE_DIR, 'instance')):
     os.makedirs(os.path.join(BASE_DIR, 'instance'))
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
+
+# Parse allowed extensions from environment variable
+ALLOWED_EXTENSIONS = os.environ.get('ALLOWED_EXTENSIONS', 'pdf,docx,doc,txt,jpg,jpeg,png').split(',')
 
 # --- App Initialization ---
 # Configure logging for Flask app
@@ -30,24 +41,43 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 app_logger = logging.getLogger(__name__) # Use Flask's logger or a specific one
 
 app = Flask(__name__, instance_relative_config=True)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key') # Change for production
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_PATH}'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+
+# Configure database URI
+if db_url.startswith('sqlite:///'):
+    # For SQLite, ensure the path is absolute
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE_PATH}'
+else:
+    # For other databases, use the URL as is
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-# Consider adding MAX_CONTENT_LENGTH for uploads
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', 100 * 1024 * 1024))  # Default: 100MB
+app.config['MAX_WORKERS'] = int(os.environ.get('MAX_WORKERS', 4))  # Default: 4 workers
+app.config['FLASK_ENV'] = os.environ.get('FLASK_ENV', 'development')
+app.config['FLASK_DEBUG'] = os.environ.get('FLASK_DEBUG', '1') == '1'
+
+# Configure rate limiting if enabled
+if os.environ.get('RATE_LIMIT_WINDOW_MS') and os.environ.get('RATE_LIMIT_MAX_REQUESTS'):
+    app.config['RATE_LIMIT_WINDOW_MS'] = int(os.environ.get('RATE_LIMIT_WINDOW_MS'))
+    app.config['RATE_LIMIT_MAX_REQUESTS'] = int(os.environ.get('RATE_LIMIT_MAX_REQUESTS'))
 
 db = SQLAlchemy(app)
+
+# Create a thread pool executor for file processing
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=app.config['MAX_WORKERS'])
 
 # --- Database Models ---
 class Folder(db.Model):
     """Model pro složky dokumentů."""
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(255), nullable=False)
+    name = db.Column(db.String(255), nullable=False, index=True)  # Indexujeme pro rychlé vyhledávání podle názvu
     description = db.Column(db.Text, nullable=True)
-    parent_id = db.Column(db.Integer, db.ForeignKey('folder.id'), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
-    folder_type = db.Column(db.String(50), default='general')  # 'email', 'know_how', 'general'
+    parent_id = db.Column(db.Integer, db.ForeignKey('folder.id'), nullable=True, index=True)  # Indexujeme pro rychlé hledání podsložek
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)  # Indexujeme pro řazení
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    folder_type = db.Column(db.String(50), default='general', index=True)  # 'email', 'know_how', 'general'
 
     # Vztahy
     documents = db.relationship('UserDocument', backref='folder', lazy='dynamic')
@@ -74,19 +104,19 @@ class UserDocument(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     original_filename = db.Column(db.String(255), nullable=False)
     stored_filename = db.Column(db.String(255), unique=True, nullable=False) # UUID or secure name
-    upload_time = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    status = db.Column(db.String(50), default='pending') # e.g., pending, processing, completed, error, warning
+    upload_time = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), index=True)  # Indexujeme pro rychlé řazení
+    status = db.Column(db.String(50), default='pending', index=True) # e.g., pending, processing, completed, error, warning
     processed_content = db.Column(db.Text, nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     # Nové sloupce pro rozdělené soubory
-    is_split = db.Column(db.Boolean, default=False) # Označuje, zda byl soubor rozdělen na části
+    is_split = db.Column(db.Boolean, default=False, index=True) # Označuje, zda byl soubor rozdělen na části
     split_folder = db.Column(db.String(255), nullable=True) # Cesta ke složce s rozdělenými částmi
-    parent_id = db.Column(db.Integer, db.ForeignKey('user_document.id'), nullable=True) # Odkaz na rodičovský dokument
+    parent_id = db.Column(db.Integer, db.ForeignKey('user_document.id'), nullable=True, index=True) # Odkaz na rodičovský dokument
     part_number = db.Column(db.Integer, nullable=True) # Číslo části, pokud je to část rozděleného souboru
     total_parts = db.Column(db.Integer, nullable=True) # Celkový počet částí
     # Nové sloupce pro kategorizaci a třídění
-    content_type = db.Column(db.String(50), default='unknown')  # 'email', 'know_how', 'general', 'unknown'
-    folder_id = db.Column(db.Integer, db.ForeignKey('folder.id'), nullable=True)  # Odkaz na složku
+    content_type = db.Column(db.String(50), default='unknown', index=True)  # 'email', 'know_how', 'general', 'unknown'
+    folder_id = db.Column(db.Integer, db.ForeignKey('folder.id'), nullable=True, index=True)  # Odkaz na složku
     tags = db.Column(db.String(500), nullable=True)  # Tagy oddělené čárkami
     # user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False) # Add later with user auth
 
@@ -140,7 +170,7 @@ class UserDocument(db.Model):
 # --- Helper Functions ---
 def detect_content_type(document):
     """
-    Detekuje typ obsahu dokumentu na základě jeho zpracovaného obsahu.
+    Detekuje typ obsahu dokumentu na základě jeho zpracovaného obsahu a přiřadí ho do odpovídající složky.
 
     Args:
         document: Instance modelu UserDocument
@@ -149,14 +179,15 @@ def detect_content_type(document):
         document.content_type = 'unknown'
         return
 
-    content = document.processed_content
+    content = document.processed_content.lower()
 
     # Detekce emailové korespondence
-    if content.startswith('{') and ('type":"email_correspondence"' in content or '"emails":' in content):
+    if content.startswith('{') and ('type":"email_correspondence"' in content or '"emails":' in content) or \
+       any(keyword in content for keyword in ['od:', 'odesílatel:', 'from:', 'komu:', 'to:', 'předmět:', 'subject:']):
         document.content_type = 'email'
         app_logger.info(f"Detected email correspondence in document ID {document.id}")
 
-        # Automatické přiřazení do složky pro emaily, pokud existuje
+        # Automatické přiřazení do složky pro emaily
         try:
             email_folder = Folder.query.filter_by(folder_type='email').first()
             if email_folder:
@@ -165,35 +196,46 @@ def detect_content_type(document):
         except Exception as e:
             app_logger.error(f"Error assigning document to email folder: {e}")
 
-    # Detekce know-how obsahu (dokumentace, návody, postupy)
-    elif any(keyword in content.lower() for keyword in ['postup', 'návod', 'how to', 'guide', 'tutorial', 'dokumentace', 'documentation']):
-        document.content_type = 'know_how'
-        app_logger.info(f"Detected know-how content in document ID {document.id}")
+    # Detekce firemního know-how
+    elif any(keyword in content for keyword in ['postup', 'návod', 'how to', 'guide', 'tutorial', 'dokumentace',
+                                               'documentation', 'firemní', 'společnost', 'proces', 'procedura',
+                                               'personální', 'zaměstnanec', 'pracovník', 'mzda', 'plat', 'dovolená',
+                                               'školení', 'nábor', 'pohovor', 'hr', 'human resources']):
+        document.content_type = 'company_know_how'
+        app_logger.info(f"Detected company know-how content in document ID {document.id}")
 
-        # Automatické přiřazení do složky pro know-how, pokud existuje
+        # Automatické přiřazení do složky pro firemní know-how
         try:
-            know_how_folder = Folder.query.filter_by(folder_type='know_how').first()
-            if know_how_folder:
-                document.folder_id = know_how_folder.id
-                app_logger.info(f"Automatically assigned document ID {document.id} to know-how folder ID {know_how_folder.id}")
+            company_folder = Folder.query.filter_by(folder_type='company_know_how').first()
+            if company_folder:
+                document.folder_id = company_folder.id
+                app_logger.info(f"Automatically assigned document ID {document.id} to company know-how folder ID {company_folder.id}")
         except Exception as e:
-            app_logger.error(f"Error assigning document to know-how folder: {e}")
+            app_logger.error(f"Error assigning document to company know-how folder: {e}")
 
-    # Detekce tabulkových dat
-    elif '|' in content and '---' in content:
-        document.content_type = 'table'
-        app_logger.info(f"Detected tabular data in document ID {document.id}")
-
-    # Obecný obsah
+    # Detekce tabulkových dat a obecný obsah - přiřadíme do firemního know-how
     else:
-        document.content_type = 'general'
-        app_logger.info(f"Assigned general content type to document ID {document.id}")
+        if '|' in content and '---' in content:
+            document.content_type = 'table'
+            app_logger.info(f"Detected tabular data in document ID {document.id}")
+        else:
+            document.content_type = 'general'
+            app_logger.info(f"Assigned general content type to document ID {document.id}")
+
+        # Přiřazení do firemního know-how (všechny ostatní dokumenty)
+        try:
+            company_folder = Folder.query.filter_by(folder_type='company_know_how').first()
+            if company_folder:
+                document.folder_id = company_folder.id
+                app_logger.info(f"Automatically assigned document ID {document.id} to company know-how folder ID {company_folder.id}")
+        except Exception as e:
+            app_logger.error(f"Error assigning document to company know-how folder: {e}")
 
 # --- Context Processors ---
 @app.context_processor
 def inject_now():
     """Inject current datetime into template context."""
-    return {'now': datetime.datetime.utcnow()}
+    return {'now': datetime.now(timezone.utc)}
 
 # --- Routes ---
 
@@ -218,7 +260,7 @@ def process_file_async(file_path, doc_id):
 
         # Get the document from the database
         with app.app_context():
-            doc = UserDocument.query.get(doc_id)
+            doc = db.session.get(UserDocument, doc_id)
             if not doc:
                 app_logger.error(f"Document ID {doc_id} not found for async processing")
                 return
@@ -233,7 +275,7 @@ def process_file_async(file_path, doc_id):
 
         # Update the database with the result
         with app.app_context():
-            doc_to_update = UserDocument.query.get(doc_id)
+            doc_to_update = db.session.get(UserDocument, doc_id)
             if not doc_to_update:
                 app_logger.error(f"Document ID {doc_id} not found after async processing")
                 return
@@ -250,14 +292,14 @@ def process_file_async(file_path, doc_id):
                 doc_to_update.processed_content = processing_result["content"]
                 app_logger.warning(f"Processing warning for doc ID {doc_id}: {processing_result['error']}")
 
-                # Detekce typu obsahu
+                # Detekce typu obsahu - make sure this runs in app context
                 detect_content_type(doc_to_update)
             else:
                 # Success case
                 doc_to_update.status = 'completed'
                 doc_to_update.processed_content = processing_result.get("content", "[No content returned]")
 
-                # Detekce typu obsahu
+                # Detekce typu obsahu - make sure this runs in app context
                 detect_content_type(doc_to_update)
 
             db.session.commit()
@@ -268,13 +310,33 @@ def process_file_async(file_path, doc_id):
         # Update the database with the error
         with app.app_context():
             try:
-                doc = UserDocument.query.get(doc_id)
+                doc = db.session.get(UserDocument, doc_id)
                 if doc and doc.status != 'completed':
                     doc.status = 'error'
                     doc.error_message = f"Server error during async processing: {e}"
                     db.session.commit()
             except Exception as db_error:
                 app_logger.error(f"Error updating database after async processing error: {db_error}")
+    finally:
+        # Clean up any temporary resources if needed
+        try:
+            # We need to use app context for database operations
+            with app.app_context():
+                # Check if the file is a temporary part file that should be cleaned up
+                if doc_id:
+                    doc = db.session.get(UserDocument, doc_id)
+                    if doc and doc.parent_id:
+                        # This is a part file, we might want to clean it up after processing
+                        # For now, we'll keep it for debugging purposes
+                        pass
+        except Exception as cleanup_error:
+            app_logger.error(f"Error during cleanup for doc ID {doc_id}: {cleanup_error}")
+
+# Function to submit a file processing task to the thread pool
+def submit_processing_task(file_path, doc_id):
+    """Submit a file processing task to the thread pool executor."""
+    app_logger.info(f"Submitting processing task for document ID: {doc_id}")
+    return executor.submit(process_file_async, file_path, doc_id)
 
 @app.route('/api/upload', methods=['POST'])
 def upload_files():
@@ -292,7 +354,7 @@ def upload_files():
 
     # Process each file
     uploaded_files = []
-    processing_threads = []
+    processing_futures = []
 
     for file in files:
         if file and file.filename != '':
@@ -360,14 +422,9 @@ def upload_files():
                                 part_doc_id = part_doc.id
                                 part_doc_ids.append(part_doc_id)
 
-                                # Start a new thread for processing each part
-                                process_thread = threading.Thread(
-                                    target=process_file_async,
-                                    args=(part_file, part_doc_id)
-                                )
-                                process_thread.daemon = True
-                                process_thread.start()
-                                processing_threads.append(process_thread)
+                                # Submit task to thread pool
+                                future = submit_processing_task(part_file, part_doc_id)
+                                processing_futures.append(future)
 
                                 app_logger.info(f"Zpracování části {i+1}/{num_chunks} souboru {original_filename} zahájeno (ID: {part_doc_id})")
 
@@ -385,14 +442,9 @@ def upload_files():
                             new_doc.status = 'pending'
                             db.session.commit()
 
-                            # Process the original file
-                            process_thread = threading.Thread(
-                                target=process_file_async,
-                                args=(save_path, doc_id)
-                            )
-                            process_thread.daemon = True
-                            process_thread.start()
-                            processing_threads.append(process_thread)
+                            # Submit task to thread pool
+                            future = submit_processing_task(save_path, doc_id)
+                            processing_futures.append(future)
 
                             # Add to the list of uploaded files
                             uploaded_files.append({
@@ -406,14 +458,9 @@ def upload_files():
                         new_doc.status = 'pending'
                         db.session.commit()
 
-                        # Process the original file
-                        process_thread = threading.Thread(
-                            target=process_file_async,
-                            args=(save_path, doc_id)
-                        )
-                        process_thread.daemon = True
-                        process_thread.start()
-                        processing_threads.append(process_thread)
+                        # Submit task to thread pool
+                        future = submit_processing_task(save_path, doc_id)
+                        processing_futures.append(future)
 
                         # Add to the list of uploaded files
                         uploaded_files.append({
@@ -427,14 +474,9 @@ def upload_files():
                     new_doc.status = 'pending'
                     db.session.commit()
 
-                    # Start a new thread for processing
-                    process_thread = threading.Thread(
-                        target=process_file_async,
-                        args=(save_path, doc_id)
-                    )
-                    process_thread.daemon = True  # Make thread a daemon so it doesn't block app shutdown
-                    process_thread.start()
-                    processing_threads.append(process_thread)
+                    # Submit task to thread pool
+                    future = submit_processing_task(save_path, doc_id)
+                    processing_futures.append(future)
 
                     # Add to the list of uploaded files
                     uploaded_files.append({
@@ -450,7 +492,7 @@ def upload_files():
                 # Try to clean up DB entry if it exists
                 if 'new_doc' in locals() and hasattr(new_doc, 'id') and new_doc.id:
                     try:
-                        doc = UserDocument.query.get(new_doc.id)
+                        doc = db.session.get(UserDocument, new_doc.id)
                         if doc and doc.status != 'completed':
                             doc.status = 'error'
                             doc.error_message = f"Server error during upload: {e}"
@@ -477,32 +519,68 @@ def list_documents():
     # 1. Check if user is authenticated (add later)
     # 2. Query DB for documents belonging to the user
     # 3. Return list of document metadata (id, name, status, upload_time)
-    # Placeholder implementation:
     try:
-        # Získání parametru pro filtrování
+        # Získání parametrů pro filtrování a stránkování
         show_parts = request.args.get('show_parts', 'false').lower() == 'true'
+        folder_id = request.args.get('folder_id')
+        content_type = request.args.get('content_type')
+        status = request.args.get('status')
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)  # Omezení počtu dokumentů na stránku
 
-        # Základní dotaz
+        # Optimalizace: Omezení maximálního počtu dokumentů na stránku
+        if per_page > 100:
+            per_page = 100
+
+        # Základní dotaz s optimalizací - vybíráme jen potřebné sloupce
         query = UserDocument.query
 
         # Filtrování částí rozdělených souborů, pokud není požadováno jejich zobrazení
         if not show_parts:
             query = query.filter(UserDocument.parent_id == None)
 
+        # Filtrování podle složky
+        if folder_id:
+            if folder_id == 'null':
+                query = query.filter(UserDocument.folder_id == None)
+            else:
+                query = query.filter(UserDocument.folder_id == int(folder_id))
+
+        # Filtrování podle typu obsahu
+        if content_type:
+            query = query.filter(UserDocument.content_type == content_type)
+
+        # Filtrování podle stavu
+        if status:
+            query = query.filter(UserDocument.status == status)
+
         # Seřazení podle času nahrání
         query = query.order_by(UserDocument.upload_time.desc())
 
-        # Získání dokumentů
-        docs = query.all()
+        # Stránkování pro optimalizaci výkonu
+        paginated_docs = query.paginate(page=page, per_page=per_page, error_out=False)
+
+        # Optimalizace: Předem načteme všechny části dokumentů v jednom dotazu, pokud jsou požadovány
+        parts_by_parent = {}
+        if show_parts:
+            parent_ids = [doc.id for doc in paginated_docs.items if doc.is_split]
+            if parent_ids:
+                parts = UserDocument.query.filter(UserDocument.parent_id.in_(parent_ids)).order_by(UserDocument.part_number).all()
+                for part in parts:
+                    if part.parent_id not in parts_by_parent:
+                        parts_by_parent[part.parent_id] = []
+                    parts_by_parent[part.parent_id].append(part)
 
         # Vytvoření seznamu dokumentů
         doc_list = []
-        for doc in docs:
+        for doc in paginated_docs.items:
             doc_info = {
                 "id": doc.id,
                 "original_filename": doc.original_filename,
                 "status": doc.status,
-                "upload_time": doc.upload_time.isoformat()
+                "upload_time": doc.upload_time.isoformat(),
+                "content_type": doc.content_type,
+                "folder_id": doc.folder_id
             }
 
             # Přidání informací o rozdělených souborech
@@ -511,13 +589,12 @@ def list_documents():
                 doc_info["total_parts"] = doc.total_parts
 
                 # Přidání informací o částech, pokud jsou požadovány
-                if show_parts:
-                    parts = UserDocument.query.filter_by(parent_id=doc.id).order_by(UserDocument.part_number).all()
+                if show_parts and doc.id in parts_by_parent:
                     doc_info["parts"] = [{
                         "id": part.id,
                         "part_number": part.part_number,
                         "status": part.status
-                    } for part in parts]
+                    } for part in parts_by_parent[doc.id]]
             elif doc.parent_id:
                 # Toto je část rozděleného dokumentu
                 doc_info["is_part"] = True
@@ -527,7 +604,20 @@ def list_documents():
 
             doc_list.append(doc_info)
 
-        return jsonify(doc_list)
+        # Přidání informací o stránkování
+        pagination_info = {
+            "total_items": paginated_docs.total,
+            "total_pages": paginated_docs.pages,
+            "current_page": page,
+            "per_page": per_page,
+            "has_next": paginated_docs.has_next,
+            "has_prev": paginated_docs.has_prev
+        }
+
+        return jsonify({
+            "documents": doc_list,
+            "pagination": pagination_info
+        })
     except Exception as e:
         app_logger.error(f"Error fetching documents: {e}")
         return jsonify({"error": "Could not retrieve documents"}), 500
@@ -540,7 +630,7 @@ def get_document_details(doc_id):
     # 2. Query DB for the specific document
     # 3. Return full document details including processed_content if 'completed'
     # Placeholder implementation:
-    doc = UserDocument.query.get_or_404(doc_id)
+    doc = db.get_or_404(UserDocument, doc_id)
     # TODO: Add ownership check
 
     # Základní informace o dokumentu
@@ -583,7 +673,7 @@ def update_document(doc_id):
     # 2. Query DB for the specific document
     # 3. Update document details
 
-    doc = UserDocument.query.get_or_404(doc_id)
+    doc = db.get_or_404(UserDocument, doc_id)
     # TODO: Add ownership check
 
     # Get request data
@@ -618,6 +708,7 @@ def update_document(doc_id):
 
 # --- Folder API Endpoints ---
 @app.route('/api/folders', methods=['GET'])
+@app.route('/api/folders/', methods=['GET'])  # Přidáno pro kompatibilitu s klienty, kteří používají lomítko na konci
 def list_folders():
     """Vrátí seznam všech složek."""
     try:
@@ -656,6 +747,7 @@ def list_folders():
         return jsonify({"error": "Could not retrieve folders"}), 500
 
 @app.route('/api/folders', methods=['POST'])
+@app.route('/api/folders/', methods=['POST'])  # Přidáno pro kompatibilitu s klienty, kteří používají lomítko na konci
 def create_folder():
     """Vytvoří novou složku."""
     try:
@@ -690,7 +782,7 @@ def create_folder():
 def get_folder_details(folder_id):
     """Vrátí detaily konkrétní složky včetně dokumentů a podsložek."""
     try:
-        folder = Folder.query.get_or_404(folder_id)
+        folder = db.get_or_404(Folder, folder_id)
 
         # Základní informace o složce
         result = folder.to_dict()
@@ -712,7 +804,7 @@ def get_folder_details(folder_id):
 def update_folder(folder_id):
     """Aktualizuje existující složku."""
     try:
-        folder = Folder.query.get_or_404(folder_id)
+        folder = db.get_or_404(Folder, folder_id)
 
         # Získání dat z požadavku
         data = request.json
@@ -728,7 +820,7 @@ def update_folder(folder_id):
             folder.folder_type = data['folder_type']
 
         # Aktualizace času poslední změny
-        folder.updated_at = datetime.datetime.utcnow()
+        folder.updated_at = datetime.now(timezone.utc)
 
         # Uložení změn
         db.session.commit()
@@ -745,7 +837,7 @@ def update_folder(folder_id):
 def delete_folder(folder_id):
     """Smaže složku a přesune její dokumenty do nadřazené složky."""
     try:
-        folder = Folder.query.get_or_404(folder_id)
+        folder = db.get_or_404(Folder, folder_id)
 
         # Získání dokumentů ve složce
         documents = UserDocument.query.filter_by(folder_id=folder_id).all()
@@ -777,7 +869,7 @@ def delete_folder(folder_id):
 def move_document(doc_id):
     """Přesune dokument do jiné složky."""
     try:
-        doc = UserDocument.query.get_or_404(doc_id)
+        doc = db.get_or_404(UserDocument, doc_id)
 
         # Získání dat z požadavku
         data = request.json
@@ -788,7 +880,7 @@ def move_document(doc_id):
         # Kontrola, zda cílová složka existuje (pokud není None)
         target_folder_id = data['folder_id']
         if target_folder_id is not None:
-            target_folder = Folder.query.get(target_folder_id)
+            target_folder = db.session.get(Folder, target_folder_id)
             if not target_folder:
                 return jsonify({"error": "Target folder does not exist"}), 404
 
@@ -822,7 +914,7 @@ def move_document(doc_id):
 def delete_document(doc_id):
     """Deletes a document record and its associated file."""
     # TODO: Add ownership check
-    doc = UserDocument.query.get_or_404(doc_id)
+    doc = db.get_or_404(UserDocument, doc_id)
     try:
         # Kontrola, zda je dokument rozdělen na části
         if doc.is_split:
@@ -856,7 +948,7 @@ def delete_document(doc_id):
         # Kontrola, zda je dokument částí rozděleného dokumentu
         elif doc.parent_id:
             # Pokud je to poslední část, aktualizujeme rodičovský dokument
-            parent = UserDocument.query.get(doc.parent_id)
+            parent = db.session.get(UserDocument, doc.parent_id)
             if parent:
                 remaining_parts = UserDocument.query.filter_by(parent_id=doc.parent_id).count()
                 if remaining_parts <= 1:  # Tato část je poslední
@@ -896,7 +988,7 @@ def get_document_status(doc_id):
     # 2. Query DB for the document status
     # 3. Return status information
     # Placeholder implementation:
-    doc = UserDocument.query.get_or_404(doc_id)
+    doc = db.get_or_404(UserDocument, doc_id)
     # TODO: Add ownership check
     return jsonify({
         "id": doc.id,
@@ -906,34 +998,55 @@ def get_document_status(doc_id):
 
 # --- Initialization ---
 def init_default_folders():
-    """Vytvoří výchozí složky, pokud neexistují."""
+    """Vytvoří výchozí složky a odstraní nepotřebné složky."""
     with app.app_context():
         # Vytvoření tabulek, pokud neexistují
         db.create_all()
 
-        # Kontrola, zda již existují výchozí složky
-        email_folder = Folder.query.filter_by(folder_type='email').first()
-        know_how_folder = Folder.query.filter_by(folder_type='know_how').first()
+        # Definice výchozích složek - pouze dvě požadované
+        default_folders = [
+            {
+                'name': 'Emailová korespondence',
+                'description': 'Složka pro emailovou korespondenci',
+                'folder_type': 'email'
+            },
+            {
+                'name': 'Firemní know-how',
+                'description': 'Složka pro firemní dokumentaci, návody a postupy',
+                'folder_type': 'company_know_how'
+            }
+        ]
 
-        # Vytvoření složky pro emaily, pokud neexistuje
-        if not email_folder:
-            email_folder = Folder(
-                name='Emailová korespondence',
-                description='Složka pro emailovou korespondenci',
-                folder_type='email'
-            )
-            db.session.add(email_folder)
-            app_logger.info("Created default email folder")
+        # Seznam povolených typů složek
+        allowed_folder_types = ['email', 'company_know_how']
 
-        # Vytvoření složky pro know-how, pokud neexistuje
-        if not know_how_folder:
-            know_how_folder = Folder(
-                name='Know-how',
-                description='Složka pro dokumentaci, návody a postupy',
-                folder_type='know_how'
-            )
-            db.session.add(know_how_folder)
-            app_logger.info("Created default know-how folder")
+        # Odstranění nepotřebných složek
+        folders_to_remove = Folder.query.filter(~Folder.folder_type.in_(allowed_folder_types)).all()
+        for folder in folders_to_remove:
+            # Přesunout dokumenty do složky Firemní know-how
+            company_folder = Folder.query.filter_by(folder_type='company_know_how').first()
+            if company_folder:
+                # Přesunout dokumenty do složky Firemní know-how
+                docs = UserDocument.query.filter_by(folder_id=folder.id).all()
+                for doc in docs:
+                    doc.folder_id = company_folder.id
+                    app_logger.info(f"Moved document ID {doc.id} from folder '{folder.name}' to 'Firemní know-how'")
+
+            # Odstranit složku
+            app_logger.info(f"Removing unnecessary folder: {folder.name}")
+            db.session.delete(folder)
+
+        # Vytvoření složek, pokud neexistují
+        for folder_data in default_folders:
+            folder = Folder.query.filter_by(folder_type=folder_data['folder_type']).first()
+            if not folder:
+                folder = Folder(
+                    name=folder_data['name'],
+                    description=folder_data['description'],
+                    folder_type=folder_data['folder_type']
+                )
+                db.session.add(folder)
+                app_logger.info(f"Created default folder: {folder_data['name']}")
 
         # Uložení změn
         db.session.commit()
@@ -942,9 +1055,42 @@ def init_default_folders():
 with app.app_context():
     db.create_all() # Create database tables if they don't exist
 
+# Funkce pro pravidelné čištění dočasných souborů
+def schedule_cleanup():
+    """Spustí pravidelné čištění dočasných souborů."""
+    import threading
+    import time
+
+    def cleanup_task():
+        while True:
+            try:
+                app_logger.info("Spouštím pravidelné čištění dočasných souborů...")
+                cleanup_temp_files(app.config['UPLOAD_FOLDER'], max_age_hours=24)
+                app_logger.info("Čištění dočasných souborů dokončeno.")
+            except Exception as e:
+                app_logger.error(f"Chyba při čištění dočasných souborů: {e}")
+
+            # Počkáme 6 hodin před dalším čištěním
+            time.sleep(6 * 60 * 60)
+
+    # Spustíme čištění v samostatném vlákně
+    cleanup_thread = threading.Thread(target=cleanup_task)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
+    app_logger.info("Naplánováno pravidelné čištění dočasných souborů.")
+
 if __name__ == '__main__':
     # Inicializace výchozích složek
     init_default_folders()
 
+    # Spustíme pravidelné čištění dočasných souborů
+    schedule_cleanup()
+
+    # Vyčistíme dočasné soubory při startu aplikace
+    cleanup_temp_files(app.config['UPLOAD_FOLDER'], max_age_hours=24)
+
+    # Get port from environment variable or use default
+    port = int(os.environ.get('PORT', 5001))
+
     # Note: Use a proper WSGI server (like Gunicorn or Waitress) for production.
-    app.run(debug=True, port=5001) # Use a different port like 5001
+    app.run(debug=app.config['FLASK_DEBUG'], host='0.0.0.0', port=port)
