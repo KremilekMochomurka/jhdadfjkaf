@@ -68,3 +68,5 @@ Advanced users can access the system programmatically through the API:
 - `GET /api/documents/<id>`: Get details of a specific document
 - `PUT /api/documents/<id>`: Update a document's content
 - `DELETE /api/documents/<id>`: Delete a document
+
+For detailed information on integrating with the API, please refer to the [Integration Documentation](../docs/index.md).
